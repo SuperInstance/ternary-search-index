@@ -1,0 +1,7 @@
+[package]
+name = "ternary-search-index"
+version = "0.1.0"
+edition = "2021"
+description = "Ternary-weighted search index for GPU-accelerable retrieval. {-1,0,+1} term sentiment ranks documents — negative demotes, positive promotes, compiles to XNOR+popcount."
+license = "Apache-2.0"
+repository = "https://github.com/SuperInstance/ternary-search-index"
