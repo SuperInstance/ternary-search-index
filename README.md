@@ -1,94 +1,72 @@
 # ternary-search-index
 
-Ternary-weighted search index for GPU-accelerable retrieval. {-1,0,+1} term sentiment ranks documents — negative demotes, positive promotes, compiles to XNOR+popcount.
+Ternary-weighted search index for GPU-accelerable document retrieval.
 
-## Why This Matters
+## Why This Exists
 
-# ternary-search-index
-Ternary-weighted search index for GPU-accelerable retrieval.
-Uses {-1, 0, +1} term weights: negative demotes, positive promotes.
-Designed to compile to XNOR+popcount on GPU.
+Standard TF-IDF uses floating-point weights. For ternary-weighted search, each term gets {-1, 0, +1}: negative demotes a document, positive promotes it, neutral has no effect. This compiles beautifully to XNOR + popcount on GPU — the same primitive used in ternary neural networks. You get a search index that runs at neural-network speed, and the ternary weights are interpretable: +1 means "this document is about this topic," -1 means "this document is anti-this-topic."
 
-## The Five-Layer Stack
+## Architecture
 
-This crate is part of the **Oxide Stack** — a distributed GPU runtime built on five layers:
+### Core Types
 
-```
-┌─────────────────┐
-│  cudaclaw        │  Persistent GPU kernels, warp consensus, SmartCRDT
-├─────────────────┤
-│  cuda-oxide      │  Flux → MIR → Pliron → NVVM → PTX compiler
-├─────────────────┤
-│  flux-core       │  Bytecode VM + A2A agent protocol
-├─────────────────┤
-│  pincher         │  "Vector DB as runtime, LLM as compiler"
-├─────────────────┤
-│  open-parallel   │  Async runtime (tokio fork)
-└─────────────────┘
-```
+- **`TermWeight`** — Enum: `Negative (-1)`, `Neutral (0)`, `Positive (1)`.
+- **`Document`** — A document with a map of term → weight.
+- **`SearchResult`** — A scored hit: `doc_id`, `score` (sum of matching weights), `matches` (count).
+- **`TernarySearchIndex`** — Collection of documents with `search()`, `batch_search()`, and `packed_score()`.
 
-The key insight: **ternary values {-1, 0, +1} map directly to GPU compute**. They pack 16× denser than FP32, enable XNOR+popcount matmul, and conservation laws become compile-time checks.
+### Search Scoring
 
-## Design
-
-Every value in this crate follows **ternary algebra** (Z₃):
-
-| Value | Meaning | GPU Analog |
-|-------|---------|------------|
-| +1 | Positive / Active / Healthy | Warp vote yes |
-| 0 | Neutral / Pending / Balanced | Warp vote abstain |
-| -1 | Negative / Failed / Overloaded | Warp vote no |
-
-This isn't arbitrary — ternary is the natural encoding for:
-1. **BitNet b1.58** (Microsoft) — ternary LLMs at 60% less power
-2. **GPU warp voting** — hardware ballot returns ternary consensus
-3. **Conservation laws** — {-1, 0, +1} preserves quantity
-
-## Key Types
-
-```rust
-pub enum TermWeight
-pub fn val
-pub struct Document
-pub fn new
-pub fn set
-pub struct SearchResult
-pub struct TernarySearchIndex
-pub fn new
-pub fn add
-pub fn search
-pub fn packed_score
-pub fn pack_doc
-```
+For a query Q and document D: `score = Σ Q[t] × D[t]` over all shared terms. Since values are {-1, 0, +1}, this is just XNOR + popcount in packed representation.
 
 ## Usage
 
-```toml
-[dependencies]
-ternary-search-index = "0.1.0"
-```
-
 ```rust
-use ternary_search_index::*;
-// See src/lib.rs tests for complete working examples
+use ternary_search_index::{Document, TernarySearchIndex, TermWeight};
+use std::collections::HashMap;
+
+let mut index = TernarySearchIndex::new();
+
+let mut doc1 = Document::new(1);
+doc1.set("gpu", TermWeight::Positive);
+doc1.set("inference", TermWeight::Positive);
+doc1.set("training", TermWeight::Negative);
+
+let mut doc2 = Document::new(2);
+doc2.set("gpu", TermWeight::Positive);
+doc2.set("training", TermWeight::Positive);
+
+index.add(doc1);
+index.add(doc2);
+
+let mut query = HashMap::new();
+query.insert("gpu".into(), TermWeight::Positive);
+query.insert("training".into(), TermWeight::Positive);
+
+let results = index.search(&query, 10);
+// doc2 scores higher (gpu=+1 + training=+1 = +2)
+// doc1 scores lower (gpu=+1 + training=-1 = 0)
 ```
 
-## Testing
+## API Reference
 
-```bash
-git clone https://github.com/SuperInstance/ternary-search-index.git
-cd ternary-search-index
-cargo test    # 8 tests
-```
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `Document::new(id)` | `Document` | Create empty document |
+| `doc.set(term, weight)` | `()` | Set a term's ternary weight |
+| `TernarySearchIndex::new()` | `TernarySearchIndex` | Create empty index |
+| `index.add(doc)` | `()` | Index a document |
+| `index.search(query, top_k)` | `Vec<SearchResult>` | Query for top-k matches |
+| `TernarySearchIndex::packed_score(q, d)` | `i32` | Score packed vectors |
+| `TernarySearchIndex::batch_search(q, docs, k)` | `Vec<(usize, i32)>` | Batch score |
+| `index.doc_count()` | `usize` | Number of indexed documents |
 
-## Stats
+## The Deeper Idea
 
-| Metric | Value |
-|--------|-------|
-| Tests | 8 |
-| Lines of Rust | 143 |
-| Public API | 14 items |
+Ternary search is **sentiment-aware information retrieval**. Traditional search treats term presence as positive signal. Ternary search lets you express "I want documents about GPUs but NOT about training" — a negative weight on "training" actively penalizes documents that are about training. This is equivalent to running a ternary classifier over your corpus where each dimension is a term and the query is the weight vector. The GPU parallelism comes free because the representation is identical to ternary neural network weights.
 
-## License
+## Related Crates
 
-Apache-2.0
+- **ternary-bloom-filter** — membership testing with ternary weights
+- **ternary-pack** — bit-packing for GPU efficiency
+- **ternary-inference-sim** — simulated inference pipeline
